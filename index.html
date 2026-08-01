@@ -70,9 +70,22 @@
     <div class="modal-card">
       <h2>Reorder Level</h2>
       <p class="muted" id="thresh-sub"></p>
-      <label>Alert when stock drops below
-        <input type="number" id="thresh-input" min="0" step="any" placeholder="0" />
-      </label>
+      <div class="form-row">
+        <label>Alert when below
+          <input type="number" id="thresh-input" min="0" step="any" placeholder="0" />
+        </label>
+        <label>Unit
+          <select id="thresh-unit">
+            <option value="g">g</option>
+            <option value="kg">kg</option>
+            <option value="ml">ml</option>
+            <option value="L">L</option>
+            <option value="pcs" selected>pcs</option>
+            <option value="box">box</option>
+            <option value="pack">pack</option>
+          </select>
+        </label>
+      </div>
       <div class="modal-actions">
         <button id="thresh-save" class="btn btn-primary btn-block">Save</button>
         <button id="thresh-cancel" class="btn btn-ghost btn-block">Cancel</button>
@@ -144,9 +157,23 @@
                 <option value="">Select a product…</option>
               </select>
             </label>
-            <label>Quantity Used <span id="u-unit-hint" class="muted"></span>
-              <input type="number" id="u-qty" min="0" step="any" placeholder="0" required />
-            </label>
+            <div class="form-row">
+              <label>Quantity
+                <input type="number" id="u-qty" min="0" step="any" placeholder="0" required />
+              </label>
+              <label>Unit
+                <select id="u-unit">
+                  <option value="g">g</option>
+                  <option value="kg">kg</option>
+                  <option value="ml">ml</option>
+                  <option value="L">L</option>
+                  <option value="pcs" selected>pcs</option>
+                  <option value="box">box</option>
+                  <option value="pack">pack</option>
+                </select>
+              </label>
+            </div>
+            <span id="u-unit-hint" class="muted"></span>
             <button type="submit" class="btn btn-accent btn-block">Record Usage</button>
           </form>
         </div>

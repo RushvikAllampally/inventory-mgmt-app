@@ -408,42 +408,53 @@
       );
   }
 
-  function addPurchase(name, qty, unit, cost) {
+  function addPurchase(name, inputQty, inputUnit, cost) {
     assertMonthOpen();
     const k = key(name);
     const meta = state.data.products[k];
     if (meta) {
-      if (meta.unit !== unit)
-        toast(`"${meta.name}" already uses ${meta.unit}; keeping that unit.`);
-      unit = meta.unit;
+      // Validate unit compatibility with existing product
+      if (!compatible(inputUnit, meta.unit))
+        throw new Error(
+          `"${meta.name}" is tracked in ${meta.unit} (${groupOf(meta.unit)?.name ?? "?"}). ` +
+          `Cannot mix with ${inputUnit} (${groupOf(inputUnit)?.name ?? "?"}).`
+        );
     } else {
-      state.data.products[k] = { name: name.trim(), unit, threshold: 0 };
+      // First purchase — establish base unit from whatever unit is entered
+      state.data.products[k] = { name: name.trim(), unit: baseUnitOf(inputUnit), threshold: 0 };
     }
+    const baseUnit = state.data.products[k].unit;
+    const baseQty  = toBase(inputQty, inputUnit);
+    const { q: dq, u: du } = smartQty(baseQty, baseUnit);
     state.data.transactions.push({
-      id: uid(),
-      type: "purchase",
-      product: k,
-      name: name.trim(),
-      qty,
-      unit,
+      id: uid(), type: "purchase",
+      product: k, name: name.trim(),
+      qty: baseQty, unit: baseUnit,
+      displayQty: inputQty, displayUnit: inputUnit, // keep what user typed
       cost,
       at: dateForSelectedMonth(),
     });
   }
 
-  function recordUsage(k, qty, derived) {
+  function recordUsage(k, inputQty, inputUnit, derived) {
     assertMonthOpen();
     const p = derived[k];
     if (!p) throw new Error("Product not found.");
-    if (qty > p.remaining + 1e-9)
-      throw new Error(`Only ${fmtQty(p.remaining)} ${p.unit} of "${p.name}" available.`);
+    if (!compatible(inputUnit, p.unit))
+      throw new Error(
+        `"${p.name}" is a ${groupOf(p.unit)?.name ?? p.unit} product. ` +
+        `Cannot record usage in ${inputUnit}.`
+      );
+    const baseQty = toBase(inputQty, inputUnit);
+    if (baseQty > p.remaining + 1e-9)
+      throw new Error(
+        `Only ${fmtSmart(p.remaining, p.unit)} of "${p.name}" available.`
+      );
     state.data.transactions.push({
-      id: uid(),
-      type: "usage",
-      product: k,
-      name: p.name,
-      qty,
-      unit: p.unit,
+      id: uid(), type: "usage",
+      product: k, name: p.name,
+      qty: baseQty, unit: p.unit,
+      displayQty: inputQty, displayUnit: inputUnit,
       at: dateForSelectedMonth(),
     });
   }
@@ -517,42 +528,40 @@
 
     const products = Object.values(derived);
 
-    // usage dropdown (only in-stock)
+    // usage dropdown (only in-stock, with smart qty label)
     const prev = el.uProduct.value;
     const opts = ['<option value="">Select a product…</option>'];
     for (const p of products) {
       if (p.remaining <= 0) continue;
       opts.push(
-        `<option value="${p.key}">${escapeHtml(p.name)} (${fmtQty(
-          p.remaining
-        )} ${p.unit} left)</option>`
+        `<option value="${p.key}">${escapeHtml(p.name)} (${fmtSmart(p.remaining, p.unit)} left)</option>`
       );
     }
     el.uProduct.innerHTML = opts.join("");
     if ([...el.uProduct.options].some((o) => o.value === prev))
       el.uProduct.value = prev;
-    updateUsageHint(derived);
+    updateUsageUnits(el.uProduct.value);
 
-    // quick-use chips (in-stock, top 8 by remaining)
+    // quick-use chips (in-stock, top 8 by remaining; log 1 of the smart unit)
     const inStock = products
       .filter((p) => p.remaining > 0)
       .sort((a, b) => b.remaining - a.remaining)
       .slice(0, 8);
     el.quickChips.innerHTML = inStock.length
       ? inStock
-          .map(
-            (p) =>
-              `<button class="chip" data-quick="${p.key}">${escapeHtml(
-                p.name
-              )}<span class="chip-q">${fmtQty(p.remaining)} ${p.unit}</span></button>`
-          )
+          .map((p) => {
+            const { u } = smartQty(p.remaining, p.unit);
+            return `<button class="chip" data-quick="${p.key}" data-quick-unit="${u}">
+              ${escapeHtml(p.name)}<span class="chip-q">${fmtSmart(p.remaining, p.unit)}</span>
+            </button>`;
+          })
           .join("")
       : '<span class="empty-inline">No stock available yet.</span>';
   }
 
   function updateUsageHint(derived) {
     const p = (derived || derive())[el.uProduct.value];
-    el.uUnitHint.textContent = p ? `(in ${p.unit})` : "";
+    el.uUnitHint.textContent = p ? `${fmtSmart(p.remaining, p.unit)} remaining` : "";
   }
 
   function renderPurchases(derived) {
@@ -580,15 +589,19 @@
       month: "short",
       day: "numeric",
     });
+    // Use display values if present, else fall back to smart-formatted base qty
+    const productBase = state.data.products[t.product]?.unit || t.unit;
+    const dQty  = t.displayQty  ?? smartQty(t.qty, productBase).q;
+    const dUnit = t.displayUnit ?? smartQty(t.qty, productBase).u;
     const amt = isP
       ? `<span class="txn-amt plus">+${money(t.cost)}</span>`
-      : `<span class="txn-amt minus">−${fmtQty(t.qty)} ${t.unit}</span>`;
+      : `<span class="txn-amt minus">−${fmtQty(dQty)} ${dUnit}</span>`;
     return `
       <li class="txn-item ${isP ? "is-purchase" : "is-usage"}" data-txn="${t.id}">
         <span class="txn-badge">${isP ? "▲" : "▼"}</span>
         <div class="txn-main">
           <div class="txn-name">${escapeHtml(t.name)}</div>
-          <div class="txn-meta">${isP ? `Bought ${fmtQty(t.qty)} ${t.unit}` : "Used"} · ${date}</div>
+          <div class="txn-meta">${isP ? `Bought ${fmtQty(dQty)} ${dUnit}` : "Used"} · ${date}</div>
         </div>
         ${amt}
       </li>`;
@@ -756,30 +769,82 @@
           : isLow
           ? '<span class="badge badge-low">Low stock</span>'
           : '<span class="badge badge-ok">In stock</span>';
+        const sc = smartCostPer(p.avgCost, p.unit);
+        const threshDisplay = p.threshold > 0
+          ? `Reorder ≤ ${fmtSmart(p.threshold, p.unit)}`
+          : "Set reorder level";
         return `
           <li class="inv-item ${isLow || out ? "low" : ""}">
             <div class="inv-top">
               <div>
                 <div class="inv-name">${escapeHtml(p.name)}</div>
-                <div class="inv-meta">${money(p.avgCost)} / ${p.unit} · used ${fmtQty(
-          p.usedQty
-        )} of ${fmtQty(p.purchasedQty)}</div>
+                <div class="inv-meta">
+                  ${money(sc.cost)} / ${sc.u} ·
+                  used ${fmtSmart(p.usedQty, p.unit)} of ${fmtSmart(p.purchasedQty, p.unit)}
+                </div>
               </div>
               <div class="inv-value">
                 <span class="amt">${money(value)}</span>
-                <span class="qty">${fmtQty(p.remaining)} ${p.unit} left</span>
+                <span class="qty">${fmtSmart(p.remaining, p.unit)} left</span>
               </div>
             </div>
             <div class="stock-bar"><div class="stock-fill" style="width:${pct}%"></div></div>
             <div class="inv-foot">
               ${badge}
-              <button class="link-btn" data-thresh="${p.key}">
-                ${p.threshold > 0 ? `Reorder ≤ ${fmtQty(p.threshold)}` : "Set reorder level"}
-              </button>
+              <button class="link-btn" data-thresh="${p.key}">${threshDisplay}</button>
             </div>
           </li>`;
       })
       .join("");
+  }
+
+  /* ---------- Unit selector helpers ---------- */
+
+  // Populate a <select> with only units compatible with baseUnit
+  function populateUnitSelect(selectEl, baseUnit, preferUnit) {
+    const opts = unitsFor(baseUnit);
+    selectEl.innerHTML = opts
+      .map((u) => `<option value="${u}"${u === (preferUnit || baseUnit) ? " selected" : ""}>${u}</option>`)
+      .join("");
+  }
+
+  // Called when the product name changes in the Purchase form
+  function updatePurchaseUnits() {
+    const name = el.pName.value.trim();
+    const k = key(name);
+    const meta = state.data.products[k];
+    if (meta) {
+      // Existing product — show only compatible units
+      populateUnitSelect(el.pUnit, meta.unit);
+    } else {
+      // New product — show all units
+      el.pUnit.innerHTML = UNIT_GROUPS.flatMap((g) => g.units)
+        .map((u) => `<option value="${u}">${u}</option>`)
+        .join("");
+    }
+  }
+
+  // Called when the selected product changes in the Usage form
+  function updateUsageUnits(productKey) {
+    const meta = state.data.products[productKey];
+    if (meta) {
+      // Default to the "nice" display unit (e.g. kg for g-based products)
+      const preferred = smartQty(1, meta.unit).u; // cheapest smart unit
+      populateUnitSelect(el.uUnit, meta.unit, preferred);
+      el.uUnitHint.textContent = `${fmtSmart((derive()[productKey] || {}).remaining || 0, meta.unit)} remaining`;
+    } else {
+      // No product selected — show all
+      el.uUnit.innerHTML = UNIT_GROUPS.flatMap((g) => g.units)
+        .map((u) => `<option value="${u}">${u}</option>`)
+        .join("");
+      el.uUnitHint.textContent = "";
+    }
+  }
+
+  // Called when threshold modal opens for a product
+  function updateThreshUnits(baseUnit) {
+    const preferred = smartQty(1, baseUnit).u;
+    populateUnitSelect(el.threshUnit, baseUnit, preferred);
   }
 
   /* ---------- Tabs ---------- */
@@ -989,9 +1054,14 @@
       return toast("That month is closed. Reopen it to edit entries.", "err");
     state.editingId = id;
     const isP = t.type === "purchase";
+    // Show in user-facing units (displayQty/displayUnit if present)
+    const productBase = state.data.products[t.product]?.unit || t.unit;
+    const dQty  = t.displayQty  ?? smartQty(t.qty, productBase).q;
+    const dUnit = t.displayUnit ?? smartQty(t.qty, productBase).u;
+    state.editingDisplayUnit = dUnit;
     el.txnTitle.textContent = isP ? "Edit Purchase" : "Edit Usage";
-    el.txnSub.textContent = `${t.name} · ${t.unit}`;
-    el.txnQty.value = t.qty;
+    el.txnSub.textContent = `${t.name} · quantities in ${dUnit}`;
+    el.txnQty.value = fmtQty(dQty);
     el.txnCost.value = isP ? t.cost : "";
     el.txnCostWrap.classList.toggle("hidden", !isP);
     el.txnDate.value = new Date(t.at).toISOString().slice(0, 10);
@@ -1001,20 +1071,24 @@
   const closeTxnModal = () => {
     el.txnModal.classList.add("hidden");
     state.editingId = null;
+    state.editingDisplayUnit = null;
   };
 
   async function handleTxnSave() {
     const t = findTxn(state.editingId);
     if (!t) return closeTxnModal();
-    const qty = num(el.txnQty.value);
-    if (qty <= 0) return showErr(el.txnError, "Quantity must be greater than 0.");
+    const dUnit = state.editingDisplayUnit || t.unit;
+    const dQty  = num(el.txnQty.value);
+    if (dQty <= 0) return showErr(el.txnError, "Quantity must be greater than 0.");
+    const baseQty = toBase(dQty, dUnit); // convert display qty back to base
     const cost = t.type === "purchase" ? num(el.txnCost.value) : 0;
     const dateVal = el.txnDate.value;
 
     const ok = await mutate(() => {
-      // validate: editing shouldn't push any product's stock negative
-      const backup = { qty: t.qty, cost: t.cost, at: t.at };
-      t.qty = qty;
+      const backup = { qty: t.qty, displayQty: t.displayQty, displayUnit: t.displayUnit, cost: t.cost, at: t.at };
+      t.qty = baseQty;
+      t.displayQty = dQty;
+      t.displayUnit = dUnit;
       if (t.type === "purchase") t.cost = cost;
       if (dateVal) {
         const d = new Date(dateVal + "T12:00:00");
@@ -1056,7 +1130,15 @@
     if (!meta) return;
     state.threshKey = k;
     el.threshSub.textContent = meta.name;
-    el.threshInput.value = meta.threshold || "";
+    updateThreshUnits(meta.unit);
+    // Show existing threshold in smart units
+    if (meta.threshold > 0) {
+      const { q, u } = smartQty(meta.threshold, meta.unit);
+      el.threshInput.value = fmtQty(q);
+      el.threshUnit.value = u;
+    } else {
+      el.threshInput.value = "";
+    }
     el.threshModal.classList.remove("hidden");
   }
   const closeThreshModal = () => {
@@ -1067,9 +1149,11 @@
     const k = state.threshKey;
     const meta = state.data.products[k];
     if (!meta) return closeThreshModal();
-    const val = num(el.threshInput.value);
+    const inputVal  = num(el.threshInput.value);
+    const inputUnit = el.threshUnit.value;
+    const baseVal   = toBase(inputVal, inputUnit); // store in base units
     const ok = await mutate(() => {
-      meta.threshold = val;
+      meta.threshold = baseVal;
     }, `Set reorder level: ${meta.name}`);
     if (ok) {
       closeThreshModal();
@@ -1138,27 +1222,31 @@
 
   async function handleUsage(e) {
     e.preventDefault();
-    const k = el.uProduct.value;
-    const qty = num(el.uQty.value);
-    if (!k) return toast("Select a product.", "err");
+    const k       = el.uProduct.value;
+    const qty     = num(el.uQty.value);
+    const unit    = el.uUnit.value;
+    if (!k)    return toast("Select a product.", "err");
     if (qty <= 0) return toast("Quantity must be greater than 0.", "err");
     const ok = await mutate(
-      () => recordUsage(k, qty, derive()),
+      () => recordUsage(k, qty, unit, derive()),
       `Record usage: ${state.data.products[k]?.name || k}`
     );
     if (ok) {
-      el.usageForm.reset();
-      updateUsageHint();
+      el.uQty.value = "";
+      updateUsageUnits(k); // keep same product selected, just clear qty
       toast("Usage recorded", "ok");
     }
   }
 
-  async function quickUse(k) {
+  async function quickUse(k, chipUnit) {
+    // Chips log 1 of the "smart" display unit (e.g. 1 kg, not 1 g)
+    const meta = state.data.products[k];
+    const logUnit = chipUnit || (meta ? smartQty(1, meta.unit).u : "pcs");
     const ok = await mutate(
-      () => recordUsage(k, 1, derive()),
-      `Quick use: ${state.data.products[k]?.name || k}`
+      () => recordUsage(k, 1, logUnit, derive()),
+      `Quick use: ${meta?.name || k}`
     );
-    if (ok) toast(`Used 1 ${state.data.products[k]?.unit || ""}`.trim(), "ok");
+    if (ok) toast(`Used 1 ${logUnit} of ${meta?.name || k}`, "ok");
   }
 
   /* ---------- Export ---------- */
@@ -1181,10 +1269,11 @@
     el.cfgCancel.addEventListener("click", closeConfig);
     el.openConfig.addEventListener("click", openConfig);
 
-    // forms
+    // forms — wire unit-selector updates
     el.purchaseForm.addEventListener("submit", handlePurchase);
     el.usageForm.addEventListener("submit", handleUsage);
-    el.uProduct.addEventListener("change", () => updateUsageHint());
+    el.pName.addEventListener("input", updatePurchaseUnits);
+    el.uProduct.addEventListener("change", () => updateUsageUnits(el.uProduct.value));
 
     // tabs
     document.querySelectorAll(".tab-btn").forEach((b) =>
@@ -1222,7 +1311,7 @@
       const txn = e.target.closest("[data-txn]");
       if (txn) return openTxnModal(txn.dataset.txn);
       const quick = e.target.closest("[data-quick]");
-      if (quick) return quickUse(quick.dataset.quick);
+      if (quick) return quickUse(quick.dataset.quick, quick.dataset.quickUnit);
       const thr = e.target.closest("[data-thresh]");
       if (thr) return openThreshModal(thr.dataset.thresh);
     });
