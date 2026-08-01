@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1120" />
+  <title>Stockpile · Inventory Tracker</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Sync status indicator -->
+  <div id="sync-status" class="sync-status hidden">
+    <span class="sync-dot"></span>
+    <span id="sync-text">Syncing…</span>
+  </div>
+
+  <!-- ============ Configuration Modal ============ -->
+  <div id="config-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>GitHub Setup</h2>
+      <p class="muted">
+        Your data lives in a <strong>data.json</strong> file inside a GitHub
+        repo. Credentials are stored only in this browser.
+      </p>
+      <label>Personal Access Token (PAT)
+        <input type="password" id="cfg-token" placeholder="ghp_…" autocomplete="off" />
+      </label>
+      <label>Repository Owner
+        <input type="text" id="cfg-owner" placeholder="your-username" autocomplete="off" />
+      </label>
+      <label>Repository Name
+        <input type="text" id="cfg-repo" placeholder="my-inventory" autocomplete="off" />
+      </label>
+      <label>Branch (optional)
+        <input type="text" id="cfg-branch" placeholder="main" autocomplete="off" />
+      </label>
+      <div id="cfg-error" class="error hidden"></div>
+      <div class="modal-actions">
+        <button id="cfg-save" class="btn btn-primary btn-block">Connect</button>
+        <button id="cfg-cancel" class="btn btn-ghost btn-block hidden">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Edit Transaction Modal ============ -->
+  <div id="txn-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2 id="txn-title">Edit Entry</h2>
+      <p class="muted" id="txn-sub"></p>
+      <label>Quantity
+        <input type="number" id="txn-qty" min="0" step="any" />
+      </label>
+      <label id="txn-cost-wrap">Total Cost
+        <input type="number" id="txn-cost" min="0" step="any" />
+      </label>
+      <label>Date
+        <input type="date" id="txn-date" />
+      </label>
+      <div id="txn-error" class="error hidden"></div>
+      <div class="modal-actions">
+        <button id="txn-save" class="btn btn-primary btn-block">Save Changes</button>
+        <button id="txn-delete" class="btn btn-danger btn-block">Delete Entry</button>
+        <button id="txn-cancel" class="btn btn-ghost btn-block">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Threshold Modal ============ -->
+  <div id="thresh-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Reorder Level</h2>
+      <p class="muted" id="thresh-sub"></p>
+      <label>Alert when stock drops below
+        <input type="number" id="thresh-input" min="0" step="any" placeholder="0" />
+      </label>
+      <div class="modal-actions">
+        <button id="thresh-save" class="btn btn-primary btn-block">Save</button>
+        <button id="thresh-cancel" class="btn btn-ghost btn-block">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Close Month Modal ============ -->
+  <div id="close-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2 id="close-title">Close Month</h2>
+      <p class="muted">
+        This settles the entire outstanding balance for this month and locks it —
+        no new entries can be added unless you reopen it.
+      </p>
+      <div class="ledger-rows" id="close-summary"></div>
+      <div class="modal-actions">
+        <button id="close-confirm" class="btn btn-primary btn-block">Settle &amp; Close</button>
+        <button id="close-cancel" class="btn btn-ghost btn-block">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Main App ============ -->
+  <main id="app" class="app hidden">
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark">◆</span>
+        <h1>Stockpile</h1>
+      </div>
+      <button id="open-config" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
+    </header>
+
+    <!-- Global month selector: drives which month new entries land in -->
+    <div id="month-bar" class="month-switch">
+      <button id="month-prev" class="icon-btn" aria-label="Previous month">‹</button>
+      <div class="month-label">
+        <span id="month-name">—</span>
+        <span class="muted" id="month-tag"></span>
+      </div>
+      <button id="month-next" class="icon-btn" aria-label="Next month">›</button>
+    </div>
+
+    <div class="tab-scroll">
+      <!-- ---------- USAGE TAB (default) ---------- -->
+      <section id="tab-usage" class="tab-panel active">
+        <div class="hero-card hero-reimburse">
+          <span class="hero-label" id="hero-used-label">Money to Reimburse</span>
+          <span class="hero-value" id="hero-used">—</span>
+          <span class="hero-sub" id="hero-used-sub"></span>
+        </div>
+
+        <!-- Close month shortcut — visible once there's usage to settle -->
+        <div id="close-month-shortcut" class="close-shortcut hidden">
+          <div class="close-shortcut-inner">
+            <div>
+              <div class="close-shortcut-title">Done for this month?</div>
+              <div class="close-shortcut-sub" id="usage-month-status"></div>
+            </div>
+            <button class="btn btn-primary" id="close-month-shortcut-btn">Close Month</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Record Usage</h2>
+          <form id="usage-form" class="form">
+            <label>Product
+              <select id="u-product" required>
+                <option value="">Select a product…</option>
+              </select>
+            </label>
+            <label>Quantity Used <span id="u-unit-hint" class="muted"></span>
+              <input type="number" id="u-qty" min="0" step="any" placeholder="0" required />
+            </label>
+            <button type="submit" class="btn btn-accent btn-block">Record Usage</button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Quick Use</h2>
+            <span class="muted">tap to log 1</span>
+          </div>
+          <div id="quick-chips" class="chips">
+            <span class="empty-inline">No stock available yet.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- PURCHASES TAB ---------- -->
+      <section id="tab-purchases" class="tab-panel">
+        <div class="hero-card hero-spent">
+          <span class="hero-label">Total Capital Spent · All Time</span>
+          <span class="hero-value" id="hero-spent">—</span>
+        </div>
+
+        <div class="panel">
+          <h2>Add Purchase</h2>
+          <form id="purchase-form" class="form">
+            <label>Product Name
+              <input type="text" id="p-name" list="product-list" placeholder="e.g. Flour" required />
+              <datalist id="product-list"></datalist>
+            </label>
+            <div class="form-row">
+              <label>Quantity
+                <input type="number" id="p-qty" min="0" step="any" placeholder="0" required />
+              </label>
+              <label>Unit
+                <select id="p-unit" required>
+                  <option value="kg">kg</option>
+                  <option value="g">g</option>
+                  <option value="L">L</option>
+                  <option value="ml">ml</option>
+                  <option value="pcs">pcs</option>
+                  <option value="box">box</option>
+                  <option value="pack">pack</option>
+                </select>
+              </label>
+            </div>
+            <label>Total Cost
+              <input type="number" id="p-cost" min="0" step="any" placeholder="0.00" required />
+            </label>
+            <button type="submit" class="btn btn-primary btn-block">Add Purchase</button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <h2>Recent Purchases</h2>
+          <ul id="recent-purchases" class="txn-list">
+            <li class="empty">No purchases yet.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ---------- REPORTS TAB ---------- -->
+      <section id="tab-reports" class="tab-panel">
+        <!-- Katha ledger for the selected month -->
+        <div class="panel ledger-card" id="ledger-card">
+          <div class="ledger-head">
+            <h2 id="ledger-title">Ledger</h2>
+            <span class="badge" id="ledger-status">Open</span>
+          </div>
+          <div class="ledger-rows" id="ledger-rows"></div>
+          <button id="close-month-btn" class="btn btn-primary btn-block">Close &amp; Settle Month</button>
+          <button id="reopen-month-btn" class="btn btn-ghost btn-block hidden">Reopen Month</button>
+        </div>
+
+        <div class="report-grid">
+          <div class="stat-card stat-reimburse">
+            <span class="stat-label">To Reimburse</span>
+            <span class="stat-value" id="m-used">—</span>
+            <span class="delta" id="m-used-delta"></span>
+          </div>
+          <div class="stat-card stat-spent">
+            <span class="stat-label">Spent</span>
+            <span class="stat-value" id="m-spent">—</span>
+            <span class="delta" id="m-spent-delta"></span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Monthly Reimbursement</h2>
+            <span class="muted">last 6 months</span>
+          </div>
+          <div id="chart-reimburse" class="chart">
+            <div class="chart-empty">No data yet.</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Spent vs Reimburse</h2>
+            <span class="muted">last 6 months</span>
+          </div>
+          <div class="legend">
+            <span><i class="dot dot-spent"></i>Spent</span>
+            <span><i class="dot dot-reimburse"></i>Reimburse</span>
+          </div>
+          <div id="chart-compare" class="chart chart-grouped">
+            <div class="chart-empty">No data yet.</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2 id="history-title">History</h2>
+            <span class="muted">tap an entry to edit</span>
+          </div>
+          <ul id="history-list" class="txn-list">
+            <li class="empty">No activity this month.</li>
+          </ul>
+        </div>
+
+        <button id="export-btn" class="btn btn-ghost btn-block">Export data.json</button>
+      </section>
+
+      <!-- ---------- INVENTORY TAB ---------- -->
+      <section id="tab-inventory" class="tab-panel">
+        <div class="hero-card hero-remaining">
+          <span class="hero-label">Value of Remaining Stock</span>
+          <span class="hero-value" id="hero-remaining">—</span>
+          <span class="hero-sub" id="hero-lowcount"></span>
+        </div>
+
+        <div class="search-wrap">
+          <input type="search" id="inv-search" placeholder="Search products…" />
+        </div>
+
+        <ul id="inventory-list" class="inventory-list">
+          <li class="empty">No inventory yet. Add a purchase to begin.</li>
+        </ul>
+      </section>
+    </div>
+
+    <!-- ---------- Bottom Tab Bar ---------- -->
+    <nav class="tabbar">
+      <button class="tab-btn active" data-tab="usage">
+        <span class="tab-ico">▲</span><span class="tab-txt">Usage</span>
+      </button>
+      <button class="tab-btn" data-tab="purchases">
+        <span class="tab-ico">＋</span><span class="tab-txt">Buy</span>
+      </button>
+      <button class="tab-btn" data-tab="reports">
+        <span class="tab-ico">▦</span><span class="tab-txt">Reports</span>
+      </button>
+      <button class="tab-btn" data-tab="inventory">
+        <span class="tab-ico">▣</span><span class="tab-txt">Stock</span>
+      </button>
+    </nav>
+  </main>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
