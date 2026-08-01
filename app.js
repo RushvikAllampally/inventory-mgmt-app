@@ -25,6 +25,7 @@
     month: currentMonthKey(), // 'YYYY-MM' selected in Reports
     invQuery: "",
     editingId: null,
+    editingDisplayUnit: null,
     threshKey: null,
   };
 
@@ -36,12 +37,12 @@
     "cfg-save", "cfg-cancel", "cfg-error",
     "txn-modal", "txn-title", "txn-sub", "txn-qty", "txn-cost", "txn-cost-wrap",
     "txn-date", "txn-error", "txn-save", "txn-delete", "txn-cancel",
-    "thresh-modal", "thresh-sub", "thresh-input", "thresh-save", "thresh-cancel",
+    "thresh-modal", "thresh-sub", "thresh-input", "thresh-unit", "thresh-save", "thresh-cancel",
     "close-modal", "close-title", "close-summary", "close-confirm", "close-cancel",
     "app", "open-config",
     "hero-used", "hero-used-label", "hero-used-sub", "hero-spent",
     "hero-remaining", "hero-lowcount",
-    "usage-form", "u-product", "u-qty", "u-unit-hint", "quick-chips",
+    "usage-form", "u-product", "u-qty", "u-unit", "u-unit-hint", "quick-chips",
     "purchase-form", "p-name", "p-qty", "p-unit", "p-cost", "product-list",
     "recent-purchases",
     "month-bar", "month-prev", "month-next", "month-name", "month-tag",
@@ -107,6 +108,49 @@
   }
 
   const fmtQty = (n) => parseFloat(Number(n).toFixed(3)).toString();
+
+  /* ---------- Unit conversion ---------- */
+  const UNIT_GROUPS = [
+    { name: "weight", base: "g",   units: ["g", "kg"],           factors: { g: 1, kg: 1000 } },
+    { name: "volume", base: "ml",  units: ["ml", "L"],            factors: { ml: 1, L: 1000 } },
+    { name: "count",  base: "pcs", units: ["pcs", "box", "pack"], factors: { pcs: 1, box: 1, pack: 1 } },
+  ];
+
+  // Return the group for a unit, or null if unknown
+  const groupOf   = (u) => UNIT_GROUPS.find((g) => g.units.includes(u)) ?? null;
+  const baseUnitOf = (u) => groupOf(u)?.base ?? u;
+
+  // Convert qty from inputUnit → base unit
+  const toBase = (qty, unit) => qty * (groupOf(unit)?.factors[unit] ?? 1);
+
+  // Check whether two units can be used for the same product
+  const compatible = (a, b) => {
+    const ga = groupOf(a), gb = groupOf(b);
+    return ga && gb ? ga.base === gb.base : a === b;
+  };
+
+  // Pick the best human-readable unit for a base qty
+  function smartQty(qtyBase, baseUnit) {
+    if (baseUnit === "g"  && qtyBase >= 1000) return { q: qtyBase / 1000, u: "kg" };
+    if (baseUnit === "ml" && qtyBase >= 1000) return { q: qtyBase / 1000, u: "L"  };
+    return { q: qtyBase, u: baseUnit };
+  }
+
+  // Smart cost: return cost per a readable unit (not per gram)
+  function smartCostPer(avgCostPerBase, baseUnit) {
+    if (baseUnit === "g")  return { cost: avgCostPerBase * 1000, u: "kg" };
+    if (baseUnit === "ml") return { cost: avgCostPerBase * 1000, u: "L"  };
+    return { cost: avgCostPerBase, u: baseUnit };
+  }
+
+  // Format qty in base to a human string (e.g. "2.5 kg")
+  function fmtSmart(qtyBase, baseUnit) {
+    const { q, u } = smartQty(qtyBase, baseUnit);
+    return `${fmtQty(q)} ${u}`;
+  }
+
+  // Return the compatible units for a base unit (for populating selects)
+  const unitsFor = (baseUnit) => groupOf(baseUnit)?.units ?? [baseUnit];
 
   const escapeHtml = (s) =>
     String(s)
@@ -792,15 +836,19 @@
       }
     }
 
+    // --- Products: convert unit field to base unit ---
     const legacyAggregates = {};
+    const productOldUnits = {}; // k -> original unit before migration
     if (data.products && typeof data.products === "object") {
       for (const [k, p] of Object.entries(data.products)) {
+        const oldUnit = String(p.unit || "pcs");
+        const newBase = baseUnitOf(oldUnit);
+        productOldUnits[k] = oldUnit;
         out.products[k] = {
           name: String(p.name || k),
-          unit: String(p.unit || "pcs"),
-          threshold: num(p.threshold),
+          unit: newBase, // always stored as base unit
+          threshold: toBase(num(p.threshold), oldUnit), // convert threshold too
         };
-        // capture legacy aggregate quantities to reconstruct if needed
         legacyAggregates[k] = {
           purchasedQty: num(p.purchasedQty),
           usedQty: num(p.usedQty),
@@ -809,51 +857,72 @@
       }
     }
 
+    // --- Transactions: ensure qty is in base unit, set displayQty/displayUnit ---
     if (Array.isArray(data.transactions)) {
       for (const t of data.transactions) {
         const name = String(t.product || t.name || "");
         const k = t.productKey || key(name || "item");
-        if (!out.products[k])
-          out.products[k] = { name: name || k, unit: String(t.unit || "pcs"), threshold: 0 };
+        const txnRawUnit = String(t.unit || "pcs");
+        if (!out.products[k]) {
+          const base = baseUnitOf(txnRawUnit);
+          out.products[k] = { name: name || k, unit: base, threshold: 0 };
+          productOldUnits[k] = txnRawUnit;
+        }
+        const productBase = out.products[k].unit;
+        let qty = num(t.qty);
+        let displayQty = t.displayQty;
+        let displayUnit = t.displayUnit || txnRawUnit;
+
+        if (txnRawUnit !== productBase && compatible(txnRawUnit, productBase)) {
+          // Old transaction stored in a non-base compatible unit → convert
+          displayQty = displayQty ?? qty;
+          displayUnit = displayUnit ?? txnRawUnit;
+          qty = toBase(qty, txnRawUnit);
+        } else if (t.displayQty == null) {
+          // Already base, no display info yet → derive smart display
+          const { q, u } = smartQty(qty, productBase);
+          displayQty = q;
+          displayUnit = u;
+        }
+
         out.transactions.push({
           id: t.id || uid(),
           type: t.type === "usage" ? "usage" : "purchase",
           product: k,
           name: out.products[k].name,
-          qty: num(t.qty),
-          unit: String(t.unit || out.products[k].unit),
+          qty,
+          unit: productBase,
+          displayQty: displayQty ?? qty,
+          displayUnit,
           cost: num(t.cost),
           at: t.at || new Date().toISOString(),
         });
       }
     }
 
-    // If a product has legacy aggregates but no matching transactions,
-    // synthesize opening entries so stock/cost are preserved.
+    // --- Synthesize opening entries from legacy aggregates if no transactions ---
     for (const [k, agg] of Object.entries(legacyAggregates)) {
       const hasTxns = out.transactions.some((t) => t.product === k);
       if (hasTxns || (agg.purchasedQty === 0 && agg.usedQty === 0)) continue;
       const meta = out.products[k];
+      const oldUnit = productOldUnits[k] || meta.unit;
       if (agg.purchasedQty > 0) {
+        const baseQty = toBase(agg.purchasedQty, oldUnit);
+        const { q, u } = smartQty(baseQty, meta.unit);
         out.transactions.push({
-          id: uid(),
-          type: "purchase",
-          product: k,
-          name: meta.name,
-          qty: agg.purchasedQty,
-          unit: meta.unit,
-          cost: agg.totalCost,
+          id: uid(), type: "purchase", product: k, name: meta.name,
+          qty: baseQty, unit: meta.unit, cost: agg.totalCost,
+          displayQty: q, displayUnit: u,
           at: "2000-01-01T00:00:00.000Z",
         });
       }
       if (agg.usedQty > 0) {
+        const baseQty = toBase(agg.usedQty, oldUnit);
+        const { q, u } = smartQty(baseQty, meta.unit);
         out.transactions.push({
-          id: uid(),
-          type: "usage",
-          product: k,
-          name: meta.name,
-          qty: agg.usedQty,
-          unit: meta.unit,
+          id: uid(), type: "usage", product: k, name: meta.name,
+          qty: baseQty, unit: meta.unit,
+          displayQty: q, displayUnit: u,
           at: "2000-01-02T00:00:00.000Z",
         });
       }
