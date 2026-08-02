@@ -33,6 +33,9 @@
   /* Autocomplete state for usage product picker */
   let acProducts  = []; // [{name, remaining, unit}] — refreshed on each renderUsage
   let acActiveIdx = -1;
+  /* Autocomplete state for purchase product picker */
+  let pbProducts  = []; // all known products — refreshed on each renderPurchases
+  let pbActiveIdx = -1;
 
   /* ---------- Element helpers ---------- */
   const $ = (id) => document.getElementById(id);
@@ -49,7 +52,7 @@
     "hero-remaining", "hero-lowcount",
     "usage-form", "u-product", "u-product-dropdown", "u-qty", "u-unit", "u-unit-hint", "usage-history-list",
     "rename-modal", "rename-sub", "rename-input", "rename-error", "rename-save", "rename-cancel",
-    "purchase-form", "p-name", "p-qty", "p-unit", "p-cost", "product-list",
+    "purchase-form", "p-name", "p-name-dropdown", "p-qty", "p-unit", "p-cost",
     "recent-purchases",
     "month-bar", "month-prev", "month-next", "month-name", "month-tag",
     "ledger-card", "ledger-title", "ledger-status", "ledger-rows",
@@ -562,6 +565,11 @@
         )
         .join("");
     }
+    // Position fixed relative to the input (escapes overflow:hidden parents)
+    const rect = el.uProduct.getBoundingClientRect();
+    el.uProductDropdown.style.top   = `${rect.bottom + 4}px`;
+    el.uProductDropdown.style.left  = `${rect.left}px`;
+    el.uProductDropdown.style.width = `${rect.width}px`;
     el.uProductDropdown.classList.remove("hidden");
   }
   function closeAcDropdown() {
@@ -576,6 +584,42 @@
     el.uQty.focus();
   }
 
+  /* ---- Purchase product autocomplete ---- */
+  function showPbDropdown(filter) {
+    const q = (filter || "").trim().toLowerCase();
+    const hits = q
+      ? pbProducts.filter((p) => p.name.toLowerCase().includes(q))
+      : pbProducts;
+    pbActiveIdx = -1;
+    if (!hits.length) {
+      el.pNameDropdown.innerHTML = '<li class="ac-empty">No existing products — will create new</li>';
+    } else {
+      el.pNameDropdown.innerHTML = hits
+        .map((p) =>
+          `<li class="ac-item" data-name="${escapeHtml(p.name)}">
+             <span class="ac-name">${escapeHtml(p.name)}</span>
+             <span class="ac-stock">${fmtSmart(p.remaining, p.unit)} in stock</span>
+           </li>`
+        )
+        .join("");
+    }
+    const rect = el.pName.getBoundingClientRect();
+    el.pNameDropdown.style.top   = `${rect.bottom + 4}px`;
+    el.pNameDropdown.style.left  = `${rect.left}px`;
+    el.pNameDropdown.style.width = `${rect.width}px`;
+    el.pNameDropdown.classList.remove("hidden");
+  }
+  function closePbDropdown() {
+    el.pNameDropdown.classList.add("hidden");
+    pbActiveIdx = -1;
+  }
+  function selectPbProduct(name) {
+    el.pName.value = name;
+    updatePurchaseUnits();
+    closePbDropdown();
+    el.pQty.focus();
+  }
+
   function updateUsageHint(derived) {
     const k = key(el.uProduct.value);
     const p = (derived || derive())[k];
@@ -584,30 +628,27 @@
 
   function renderUsageHistory() {
     const usages = state.data.transactions
-      .filter((t) => t.type === "usage")
+      .filter((t) => t.type === "usage" && t.at.slice(0, 7) === state.month)
       .sort((a, b) => new Date(b.at) - new Date(a.at));
     el.usageHistoryList.innerHTML = usages.length
       ? usages.map((t) => txnRow(t)).join("")
-      : '<li class="empty">No usage recorded yet.</li>';
+      : '<li class="empty">No usage recorded for this month.</li>';
   }
 
   function renderPurchases(derived) {
     const t = totalsAllTime(derived);
     el.heroSpent.textContent = money(t.spent);
 
-    // datalist
-    el.productList.innerHTML = Object.values(derived)
-      .map((p) => `<option value="${escapeHtml(p.name)}"></option>`)
-      .join("");
+    // purchase product autocomplete source (all known products, alpha-sorted)
+    pbProducts = Object.values(derived).sort((a, b) => a.name.localeCompare(b.name));
 
-    // recent purchases (latest 6)
+    // purchases for selected month, newest first
     const purchases = state.data.transactions
-      .filter((t) => t.type === "purchase")
-      .slice(-6)
-      .reverse();
+      .filter((t) => t.type === "purchase" && t.at.slice(0, 7) === state.month)
+      .sort((a, b) => new Date(b.at) - new Date(a.at));
     el.recentPurchases.innerHTML = purchases.length
       ? purchases.map((t) => txnRow(t)).join("")
-      : '<li class="empty">No purchases yet.</li>';
+      : '<li class="empty">No purchases for this month.</li>';
   }
 
   function txnRow(t) {
@@ -1350,10 +1391,42 @@
     // forms — wire unit-selector updates
     el.purchaseForm.addEventListener("submit", handlePurchase);
     el.usageForm.addEventListener("submit", handleUsage);
-    el.pName.addEventListener("input", updatePurchaseUnits);
+    el.pName.addEventListener("focus", () => showPbDropdown(el.pName.value));
+    el.pName.addEventListener("input", () => {
+      showPbDropdown(el.pName.value);
+      updatePurchaseUnits();
+    });
+    el.pName.addEventListener("keydown", (e) => {
+      const items = [...el.pNameDropdown.querySelectorAll(".ac-item")];
+      if (!items.length) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        pbActiveIdx = Math.min(pbActiveIdx + 1, items.length - 1);
+        items.forEach((li, i) => li.classList.toggle("ac-active", i === pbActiveIdx));
+        items[pbActiveIdx]?.scrollIntoView({ block: "nearest" });
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        pbActiveIdx = Math.max(pbActiveIdx - 1, 0);
+        items.forEach((li, i) => li.classList.toggle("ac-active", i === pbActiveIdx));
+        items[pbActiveIdx]?.scrollIntoView({ block: "nearest" });
+      } else if (e.key === "Enter") {
+        if (pbActiveIdx >= 0 && items[pbActiveIdx]) {
+          e.preventDefault();
+          selectPbProduct(items[pbActiveIdx].dataset.name);
+        }
+      } else if (e.key === "Escape") {
+        closePbDropdown();
+      }
+    });
     el.pName.addEventListener("blur", () => {
+      setTimeout(closePbDropdown, 160);
+      // auto-correct casing to canonical name
       const k = key(el.pName.value);
       if (k && state.data.products[k]) el.pName.value = state.data.products[k].name;
+    });
+    el.pNameDropdown.addEventListener("mousedown", (e) => {
+      const li = e.target.closest(".ac-item");
+      if (li) { e.preventDefault(); selectPbProduct(li.dataset.name); }
     });
     // Usage product autocomplete
     el.uProduct.addEventListener("focus", () => showAcDropdown(el.uProduct.value));

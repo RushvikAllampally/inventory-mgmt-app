@@ -169,11 +169,8 @@
           <h2>Record Usage</h2>
           <form id="usage-form" class="form">
             <label>Product
-              <div class="ac-wrap">
-                <input type="text" id="u-product"
-                  placeholder="Search product…" autocomplete="off" />
-                <ul id="u-product-dropdown" class="ac-dropdown hidden"></ul>
-              </div>
+              <input type="text" id="u-product"
+                placeholder="Search product…" autocomplete="off" />
             </label>
             <div class="form-row">
               <label>Quantity
@@ -218,8 +215,7 @@
           <h2>Add Purchase</h2>
           <form id="purchase-form" class="form">
             <label>Product Name
-              <input type="text" id="p-name" list="product-list" placeholder="e.g. Flour" required />
-              <datalist id="product-list"></datalist>
+              <input type="text" id="p-name" placeholder="Search or add product…" autocomplete="off" required />
             </label>
             <div class="form-row">
               <label>Quantity
@@ -352,6 +348,10 @@
 
   <!-- Toast -->
   <div id="toast" class="toast hidden"></div>
+
+  <!-- Autocomplete dropdowns — body-level to escape overflow:hidden parents -->
+  <ul id="u-product-dropdown" class="ac-dropdown hidden"></ul>
+  <ul id="p-name-dropdown"    class="ac-dropdown hidden"></ul>
 
   <script src="app.js"></script>
 </body>
