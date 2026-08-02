@@ -93,6 +93,22 @@
     </div>
   </div>
 
+  <!-- ============ Rename Product Modal ============ -->
+  <div id="rename-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Rename Product</h2>
+      <p class="muted" id="rename-sub"></p>
+      <label>New Name
+        <input type="text" id="rename-input" placeholder="Product name" autocomplete="off" />
+      </label>
+      <div id="rename-error" class="error hidden"></div>
+      <div class="modal-actions">
+        <button id="rename-save" class="btn btn-primary btn-block">Save Name</button>
+        <button id="rename-cancel" class="btn btn-ghost btn-block">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ============ Close Month Modal ============ -->
   <div id="close-modal" class="modal hidden">
     <div class="modal-card">
@@ -153,9 +169,11 @@
           <h2>Record Usage</h2>
           <form id="usage-form" class="form">
             <label>Product
-              <select id="u-product" required>
-                <option value="">Select a product…</option>
-              </select>
+              <div class="ac-wrap">
+                <input type="text" id="u-product"
+                  placeholder="Search product…" autocomplete="off" />
+                <ul id="u-product-dropdown" class="ac-dropdown hidden"></ul>
+              </div>
             </label>
             <div class="form-row">
               <label>Quantity
@@ -180,12 +198,12 @@
 
         <div class="panel">
           <div class="panel-head">
-            <h2>Quick Use</h2>
-            <span class="muted">tap to log 1</span>
+            <h2>Usage History</h2>
+            <span class="muted">tap to edit or delete</span>
           </div>
-          <div id="quick-chips" class="chips">
-            <span class="empty-inline">No stock available yet.</span>
-          </div>
+          <ul id="usage-history-list" class="txn-list">
+            <li class="empty">No usage recorded yet.</li>
+          </ul>
         </div>
       </section>
 

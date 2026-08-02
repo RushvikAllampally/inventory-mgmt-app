@@ -27,7 +27,12 @@
     editingId: null,
     editingDisplayUnit: null,
     threshKey: null,
+    renameKey: null,
   };
+
+  /* Autocomplete state for usage product picker */
+  let acProducts  = []; // [{name, remaining, unit}] — refreshed on each renderUsage
+  let acActiveIdx = -1;
 
   /* ---------- Element helpers ---------- */
   const $ = (id) => document.getElementById(id);
@@ -42,7 +47,8 @@
     "app", "open-config",
     "hero-used", "hero-used-label", "hero-used-sub", "hero-spent",
     "hero-remaining", "hero-lowcount",
-    "usage-form", "u-product", "u-qty", "u-unit", "u-unit-hint", "quick-chips",
+    "usage-form", "u-product", "u-product-dropdown", "u-qty", "u-unit", "u-unit-hint", "usage-history-list",
+    "rename-modal", "rename-sub", "rename-input", "rename-error", "rename-save", "rename-cancel",
     "purchase-form", "p-name", "p-qty", "p-unit", "p-cost", "product-list",
     "recent-purchases",
     "month-bar", "month-prev", "month-next", "month-name", "month-tag",
@@ -423,12 +429,13 @@
       // First purchase — establish base unit from whatever unit is entered
       state.data.products[k] = { name: name.trim(), unit: baseUnitOf(inputUnit), threshold: 0 };
     }
+    const canonicalName = state.data.products[k].name; // always use stored name
     const baseUnit = state.data.products[k].unit;
     const baseQty  = toBase(inputQty, inputUnit);
     const { q: dq, u: du } = smartQty(baseQty, baseUnit);
     state.data.transactions.push({
       id: uid(), type: "purchase",
-      product: k, name: name.trim(),
+      product: k, name: canonicalName,
       qty: baseQty, unit: baseUnit,
       displayQty: inputQty, displayUnit: inputUnit, // keep what user typed
       cost,
@@ -528,40 +535,60 @@
 
     const products = Object.values(derived);
 
-    // usage dropdown (only in-stock, with smart qty label)
-    const prev = el.uProduct.value;
-    const opts = ['<option value="">Select a product…</option>'];
-    for (const p of products) {
-      if (p.remaining <= 0) continue;
-      opts.push(
-        `<option value="${p.key}">${escapeHtml(p.name)} (${fmtSmart(p.remaining, p.unit)} left)</option>`
-      );
-    }
-    el.uProduct.innerHTML = opts.join("");
-    if ([...el.uProduct.options].some((o) => o.value === prev))
-      el.uProduct.value = prev;
-    updateUsageUnits(el.uProduct.value);
-
-    // quick-use chips (in-stock, top 8 by remaining; log 1 of the smart unit)
-    const inStock = products
+    // refresh autocomplete source (in-stock products, alpha-sorted)
+    acProducts = products
       .filter((p) => p.remaining > 0)
-      .sort((a, b) => b.remaining - a.remaining)
-      .slice(0, 8);
-    el.quickChips.innerHTML = inStock.length
-      ? inStock
-          .map((p) => {
-            const { u } = smartQty(p.remaining, p.unit);
-            return `<button class="chip" data-quick="${p.key}" data-quick-unit="${u}">
-              ${escapeHtml(p.name)}<span class="chip-q">${fmtSmart(p.remaining, p.unit)}</span>
-            </button>`;
-          })
-          .join("")
-      : '<span class="empty-inline">No stock available yet.</span>';
+      .sort((a, b) => a.name.localeCompare(b.name));
+    updateUsageUnits(key(el.uProduct.value));
+    renderUsageHistory();
+  }
+
+  /* ---- Usage product autocomplete ---- */
+  function showAcDropdown(filter) {
+    const q = (filter || "").trim().toLowerCase();
+    const hits = q
+      ? acProducts.filter((p) => p.name.toLowerCase().includes(q))
+      : acProducts;
+    acActiveIdx = -1;
+    if (!hits.length) {
+      el.uProductDropdown.innerHTML = '<li class="ac-empty">No matching products</li>';
+    } else {
+      el.uProductDropdown.innerHTML = hits
+        .map((p) =>
+          `<li class="ac-item" data-name="${escapeHtml(p.name)}">
+             <span class="ac-name">${escapeHtml(p.name)}</span>
+             <span class="ac-stock">${fmtSmart(p.remaining, p.unit)} left</span>
+           </li>`
+        )
+        .join("");
+    }
+    el.uProductDropdown.classList.remove("hidden");
+  }
+  function closeAcDropdown() {
+    el.uProductDropdown.classList.add("hidden");
+    acActiveIdx = -1;
+  }
+  function selectAcProduct(name) {
+    el.uProduct.value = name;
+    updateUsageUnits(key(name));
+    updateUsageHint();
+    closeAcDropdown();
+    el.uQty.focus();
   }
 
   function updateUsageHint(derived) {
-    const p = (derived || derive())[el.uProduct.value];
+    const k = key(el.uProduct.value);
+    const p = (derived || derive())[k];
     el.uUnitHint.textContent = p ? `${fmtSmart(p.remaining, p.unit)} remaining` : "";
+  }
+
+  function renderUsageHistory() {
+    const usages = state.data.transactions
+      .filter((t) => t.type === "usage")
+      .sort((a, b) => new Date(b.at) - new Date(a.at));
+    el.usageHistoryList.innerHTML = usages.length
+      ? usages.map((t) => txnRow(t)).join("")
+      : '<li class="empty">No usage recorded yet.</li>';
   }
 
   function renderPurchases(derived) {
@@ -791,7 +818,10 @@
             <div class="stock-bar"><div class="stock-fill" style="width:${pct}%"></div></div>
             <div class="inv-foot">
               ${badge}
-              <button class="link-btn" data-thresh="${p.key}">${threshDisplay}</button>
+              <div class="inv-actions">
+                <button class="link-btn" data-thresh="${p.key}">${threshDisplay}</button>
+                <button class="link-btn link-rename" data-rename="${p.key}">Rename</button>
+              </div>
             </div>
           </li>`;
       })
@@ -1161,6 +1191,60 @@
     }
   }
 
+  /* ---------- Rename product modal ---------- */
+  function openRenameModal(k) {
+    const meta = state.data.products[k];
+    if (!meta) return;
+    state.renameKey = k;
+    el.renameSub.textContent = `Current name: ${meta.name}`;
+    el.renameInput.value = meta.name;
+    el.renameError.classList.add("hidden");
+    el.renameModal.classList.remove("hidden");
+    el.renameInput.focus();
+    el.renameInput.select();
+  }
+  const closeRenameModal = () => {
+    el.renameModal.classList.add("hidden");
+    state.renameKey = null;
+  };
+
+  async function handleRenameSave() {
+    const oldKey = state.renameKey;
+    const oldMeta = state.data.products[oldKey];
+    if (!oldMeta) return closeRenameModal();
+
+    const newName = el.renameInput.value.trim();
+    if (!newName) return showErr(el.renameError, "Name cannot be empty.");
+    if (newName === oldMeta.name) return closeRenameModal(); // no change
+
+    const newKey = key(newName);
+    if (newKey !== oldKey && state.data.products[newKey])
+      return showErr(el.renameError, `"${newName}" already exists as a product.`);
+
+    const ok = await mutate(() => {
+      // Update product entry (re-key if name changes key)
+      const updated = { ...oldMeta, name: newName };
+      if (newKey !== oldKey) {
+        state.data.products[newKey] = updated;
+        delete state.data.products[oldKey];
+      } else {
+        state.data.products[oldKey].name = newName;
+      }
+      // Update all transactions that reference this product
+      for (const t of state.data.transactions) {
+        if (t.product === oldKey) {
+          t.product = newKey;
+          t.name    = newName;
+        }
+      }
+    }, `Rename product: ${oldMeta.name} → ${newName}`);
+
+    if (ok) {
+      closeRenameModal();
+      toast(`Renamed to "${newName}"`, "ok");
+    }
+  }
+
   /* ---------- Close / reopen month (katha) ---------- */
   function openCloseModal() {
     const l = ledgerFor(state.month, derive());
@@ -1222,32 +1306,26 @@
 
   async function handleUsage(e) {
     e.preventDefault();
-    const k       = el.uProduct.value;
-    const qty     = num(el.uQty.value);
-    const unit    = el.uUnit.value;
-    if (!k)    return toast("Select a product.", "err");
-    if (qty <= 0) return toast("Quantity must be greater than 0.", "err");
+    const typedName = el.uProduct.value.trim();
+    const k         = key(typedName);
+    const qty        = num(el.uQty.value);
+    const unit       = el.uUnit.value;
+    if (!typedName) return toast("Enter a product name.", "err");
+    if (!state.data.products[k]) return toast(`"${typedName}" not found. Check the spelling.`, "err");
+    if (qty <= 0)   return toast("Quantity must be greater than 0.", "err");
+    // Auto-correct display name to canonical
+    el.uProduct.value = state.data.products[k].name;
     const ok = await mutate(
       () => recordUsage(k, qty, unit, derive()),
       `Record usage: ${state.data.products[k]?.name || k}`
     );
     if (ok) {
       el.uQty.value = "";
-      updateUsageUnits(k); // keep same product selected, just clear qty
+      updateUsageUnits(k);
       toast("Usage recorded", "ok");
     }
   }
 
-  async function quickUse(k, chipUnit) {
-    // Chips log 1 of the "smart" display unit (e.g. 1 kg, not 1 g)
-    const meta = state.data.products[k];
-    const logUnit = chipUnit || (meta ? smartQty(1, meta.unit).u : "pcs");
-    const ok = await mutate(
-      () => recordUsage(k, 1, logUnit, derive()),
-      `Quick use: ${meta?.name || k}`
-    );
-    if (ok) toast(`Used 1 ${logUnit} of ${meta?.name || k}`, "ok");
-  }
 
   /* ---------- Export ---------- */
   function exportData() {
@@ -1273,7 +1351,43 @@
     el.purchaseForm.addEventListener("submit", handlePurchase);
     el.usageForm.addEventListener("submit", handleUsage);
     el.pName.addEventListener("input", updatePurchaseUnits);
-    el.uProduct.addEventListener("change", () => updateUsageUnits(el.uProduct.value));
+    el.pName.addEventListener("blur", () => {
+      const k = key(el.pName.value);
+      if (k && state.data.products[k]) el.pName.value = state.data.products[k].name;
+    });
+    // Usage product autocomplete
+    el.uProduct.addEventListener("focus", () => showAcDropdown(el.uProduct.value));
+    el.uProduct.addEventListener("input", () => {
+      showAcDropdown(el.uProduct.value);
+      updateUsageUnits(key(el.uProduct.value));
+    });
+    el.uProduct.addEventListener("keydown", (e) => {
+      const items = [...el.uProductDropdown.querySelectorAll(".ac-item")];
+      if (!items.length) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        acActiveIdx = Math.min(acActiveIdx + 1, items.length - 1);
+        items.forEach((li, i) => li.classList.toggle("ac-active", i === acActiveIdx));
+        items[acActiveIdx]?.scrollIntoView({ block: "nearest" });
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        acActiveIdx = Math.max(acActiveIdx - 1, 0);
+        items.forEach((li, i) => li.classList.toggle("ac-active", i === acActiveIdx));
+        items[acActiveIdx]?.scrollIntoView({ block: "nearest" });
+      } else if (e.key === "Enter") {
+        if (acActiveIdx >= 0 && items[acActiveIdx]) {
+          e.preventDefault();
+          selectAcProduct(items[acActiveIdx].dataset.name);
+        }
+      } else if (e.key === "Escape") {
+        closeAcDropdown();
+      }
+    });
+    el.uProduct.addEventListener("blur", () => setTimeout(closeAcDropdown, 160));
+    el.uProductDropdown.addEventListener("mousedown", (e) => {
+      const li = e.target.closest(".ac-item");
+      if (li) { e.preventDefault(); selectAcProduct(li.dataset.name); }
+    });
 
     // tabs
     document.querySelectorAll(".tab-btn").forEach((b) =>
@@ -1310,10 +1424,10 @@
     document.addEventListener("click", (e) => {
       const txn = e.target.closest("[data-txn]");
       if (txn) return openTxnModal(txn.dataset.txn);
-      const quick = e.target.closest("[data-quick]");
-      if (quick) return quickUse(quick.dataset.quick, quick.dataset.quickUnit);
       const thr = e.target.closest("[data-thresh]");
       if (thr) return openThreshModal(thr.dataset.thresh);
+      const ren = e.target.closest("[data-rename]");
+      if (ren) return openRenameModal(ren.dataset.rename);
     });
 
     // txn modal
@@ -1325,8 +1439,13 @@
     el.threshSave.addEventListener("click", handleThreshSave);
     el.threshCancel.addEventListener("click", closeThreshModal);
 
+    // rename modal
+    el.renameSave.addEventListener("click", handleRenameSave);
+    el.renameCancel.addEventListener("click", closeRenameModal);
+    el.renameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") handleRenameSave(); });
+
     // close modals on backdrop click
-    [el.txnModal, el.threshModal, el.closeModal].forEach((m) =>
+    [el.txnModal, el.threshModal, el.closeModal, el.renameModal].forEach((m) =>
       m.addEventListener("click", (e) => {
         if (e.target === m) m.classList.add("hidden");
       })
